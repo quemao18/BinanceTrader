@@ -9,6 +9,7 @@ BinanceTrader is a Python class that utilizes Deep Neural Networks (DNN) for mak
 - [Installation](#installation)
 - [Setup](#setup)
 - [Usage](#usage)
+- [Deploy on Google Cloud](#deploy-on-google-cloud)
 - [How It Works](#how-it-works)
 - [Risk Disclaimer](#risk-disclaimer)
 - [Resources](#resources)
@@ -56,9 +57,14 @@ pip install -r requirements_specific.txt
 Note: While pre-trained models are provided, it's recommended to train your own for the most up-to-date data.
 
 2. Configuration:
-- Open `credentials.txt` and replace `API_KEY` and `SECRET` with your Binance API credentials. [How to get Binance API keys](https://support.coinigy.com/hc/en-us/articles/360001144614-How-do-I-find-my-API-key-on-Binance-com-)
-- In `BinanceTrader.py` set `testnet` to `True` if you want to use Binance Testnet for demo trading.
-- Update `model_path` and `scaler_path` with the correct paths to your model and scaler files.
+- Copy `.env.example` to `.env` and set your Binance credentials and runtime options.
+- Recommended defaults for Cloud Run Jobs:
+   - `TRADE_MODE=spot`
+   - `TESTNET=false`
+   - `SINGLE_RUN=true`
+   - `MAX_CYCLES_PER_RUN=1`
+   - `ONLY_NEW_CANDLE=true`
+- Keep `SKIP_FETCH_CURRENCIES=true` to avoid Binance SAPI currency metadata calls that may fail in some cloud regions.
 
 ## Usage
 
@@ -67,6 +73,86 @@ After completing the setup, run the BinanceTrader:
 python BinanceTrader.py
 ```
 The script will connect to your Binance account and start trading based on the DNN predictions.
+
+## Deploy on Google Cloud
+
+This project is optimized for **Cloud Run Jobs** + **Cloud Scheduler**.
+Do not deploy it as a Cloud Run Service because this bot is not an HTTP server.
+
+### Prerequisites
+
+- Install and authenticate `gcloud` CLI.
+- A GCP project with billing enabled.
+- A local `.env` file with at least:
+
+```dotenv
+API_KEY=your_binance_api_key
+SECRET=your_binance_secret
+TRADING_PAIR=BTCUSDT
+TIMEFRAME=15m
+TESTNET=false
+TRADE_MODE=spot
+SINGLE_RUN=true
+MAX_CYCLES_PER_RUN=1
+SLEEP_BETWEEN_CYCLES_SEC=30
+ONLY_NEW_CANDLE=true
+SKIP_FETCH_CURRENCIES=true
+```
+
+### One-Command Deploy
+
+Use the helper script:
+
+```bash
+chmod +x deploy.sh
+PROJECT_ID=your-project-id ./deploy.sh
+```
+
+Optional overrides:
+
+```bash
+PROJECT_ID=your-project-id \
+REGION=southamerica-east1 \
+SCHEDULE="*/15 * * * *" \
+JOB_NAME=binance-trader-job \
+SCHEDULER_JOB_NAME=run-bot-job \
+RUN_NOW=true \
+./deploy.sh
+```
+
+What `deploy.sh` does:
+
+1. Enables required APIs (Cloud Build, Run, Scheduler, Secret Manager).
+2. Builds and pushes image to `gcr.io/<PROJECT_ID>/binance-trader`.
+3. Stores `API_KEY` and `SECRET` in Secret Manager.
+4. Creates/updates Cloud Run Job with env vars and secrets.
+5. Creates/updates Cloud Scheduler job to trigger the run periodically.
+
+### Useful Commands
+
+Run job now:
+
+```bash
+gcloud run jobs execute binance-trader-job --region southamerica-east1
+```
+
+List executions:
+
+```bash
+gcloud run jobs executions list --job binance-trader-job --region southamerica-east1
+```
+
+Read logs for one execution:
+
+```bash
+gcloud logging read 'resource.type="cloud_run_job" AND labels."run.googleapis.com/execution_name"="<execution-name>"' --limit 100 --format='value(textPayload)'
+```
+
+Run deploy
+
+```bash
+PROJECT_ID=your-project-id REGION=southamerica-east1 RUN_NOW=true ./deploy.sh
+```
 
 ## How It Works
 
@@ -127,3 +213,4 @@ Contributions to improve BinanceTrader are welcome! Please feel free to submit p
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+

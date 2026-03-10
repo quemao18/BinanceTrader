@@ -6,92 +6,97 @@
 
 
 
-import pandas as pd
-pd.options.display.float_format = '{:.3f}'.format
-from decimal import Decimal
-from typing import Iterable, Optional, TypeVar
-
-from stock_indicators._cslib import CsIndicator
-from stock_indicators._cstypes import List as CsList
-from stock_indicators._cstypes import Decimal as CsDecimal
-from stock_indicators._cstypes import to_pydecimal
-from stock_indicators.indicators.common.enums import EndType
-from stock_indicators.indicators.common.results import IndicatorResults, ResultBase
-from stock_indicators.indicators.common.quote import Quote
-# ---------------------------------------------------------------------------------------------------
+from dataclasses import dataclass
+from enum import Enum
+from typing import Iterable, List, Optional
 
 
-def get_zig_zag(quotes: Iterable[Quote], end_type: EndType = EndType.CLOSE,
-                percent_change: float = 5):
-    """Get Zig Zag calculated.
-
-    Zig Zag is a price chart overlay that simplifies the up and down
-    movements and transitions based on a percent change smoothing threshold.
-
-    Parameters:
-        `quotes` : Iterable[Quote]
-            Historical price quotes.
-
-        `end_type` : EndType, defaults EndType.CLOSE
-           Determines use of Close or High/Low wicks for extreme points.
-
-        `percent_change` : float, defaults 5
-           Percent price change to set threshold for minimum size movements.
-
-    Returns:
-        `ZigZagResults[ZigZagResult]`
-            ZigZagResults is list of ZigZagResult with providing useful helper methods.
-
-    See more:
-         - [Zig Zag Reference](https://daveskender.github.io/Stock.Indicators.Python/indicators/ZigZag/#content)
-         - [Helper Methods](https://daveskender.github.io/Stock.Indicators.Python/utilities/#content)
-    """
-    results = CsIndicator.GetZigZag[Quote](CsList(Quote, quotes), end_type.cs_value,
-                                           CsDecimal(percent_change))
-    return ZigZagResults(results, ZigZagResult)
+class EndType(Enum):
+    CLOSE = "close"
+    HIGH_LOW = "high_low"
 
 
-class ZigZagResult(ResultBase):
-    """
-    A wrapper class for a single unit of Zig Zag results.
-    """
+@dataclass
+class ZigZagResult:
+    point_type: Optional[str] = None
 
-    @property
-    def zig_zag(self) -> Optional[Decimal]:
-        return to_pydecimal(self._csdata.ZigZag)
 
-    @zig_zag.setter
-    def zig_zag(self, value):
-        self._csdata.ZigZag = CsDecimal(value)
+def _price(row, end_type: EndType, side: str) -> float:
+    if end_type == EndType.CLOSE:
+        if hasattr(row, "Close"):
+            return float(getattr(row, "Close"))
+        return float(getattr(row, "close"))
 
-    @property
-    def point_type(self) -> Optional[str]:
-        return self._csdata.PointType
+    if side == "high":
+        if hasattr(row, "High"):
+            return float(getattr(row, "High"))
+        return float(getattr(row, "high"))
 
-    @point_type.setter
-    def point_type(self, value):
-        self._csdata.PointType = value
+    if hasattr(row, "Low"):
+        return float(getattr(row, "Low"))
+    return float(getattr(row, "low"))
 
-    @property
-    def retrace_high(self) -> Optional[Decimal]:
-        return to_pydecimal(self._csdata.RetraceHigh)
 
-    @retrace_high.setter
-    def retrace_high(self, value):
-        self._csdata.RetraceHigh = CsDecimal(value)
+def get_zig_zag(quotes: Iterable, end_type: EndType = EndType.CLOSE,
+                percent_change: float = 5) -> List[ZigZagResult]:
+    rows = list(quotes)
+    results = [ZigZagResult() for _ in rows]
+    if len(rows) < 2:
+        return results
 
-    @property
-    def retrace_low(self) -> Optional[Decimal]:
-        return to_pydecimal(self._csdata.RetraceLow)
+    threshold = percent_change / 100.0
+    trend = 0
+    pivot_idx = 0
+    pivot_price = _price(rows[0], end_type, "high")
+    extreme_idx = 0
+    extreme_price = pivot_price
 
-    @retrace_low.setter
-    def retrace_low(self, value):
-        self._csdata.RetraceLow = CsDecimal(value)
+    for i in range(1, len(rows)):
+        high = _price(rows[i], end_type, "high")
+        low = _price(rows[i], end_type, "low")
 
-_T = TypeVar("_T", bound=ZigZagResult)
-class ZigZagResults(IndicatorResults[_T]):
-    """
-    A wrapper class for the list of Zig Zag results.
-    It is exactly same with built-in `list` except for that it provides
-    some useful helper methods written in CSharp implementation.
-    """
+        if trend == 0:
+            up_move = (high / pivot_price) - 1.0
+            down_move = (pivot_price / low) - 1.0
+
+            if up_move >= threshold and up_move >= down_move:
+                results[pivot_idx].point_type = "L"
+                trend = 1
+                extreme_idx = i
+                extreme_price = high
+            elif down_move >= threshold and down_move > up_move:
+                results[pivot_idx].point_type = "H"
+                trend = -1
+                extreme_idx = i
+                extreme_price = low
+            continue
+
+        if trend == 1:
+            if high >= extreme_price:
+                extreme_price = high
+                extreme_idx = i
+
+            pullback = (extreme_price / low) - 1.0
+            if pullback >= threshold:
+                results[extreme_idx].point_type = "H"
+                trend = -1
+                pivot_idx = extreme_idx
+                pivot_price = extreme_price
+                extreme_idx = i
+                extreme_price = low
+            continue
+
+        if low <= extreme_price:
+            extreme_price = low
+            extreme_idx = i
+
+        rebound = (high / extreme_price) - 1.0
+        if rebound >= threshold:
+            results[extreme_idx].point_type = "L"
+            trend = 1
+            pivot_idx = extreme_idx
+            pivot_price = extreme_price
+            extreme_idx = i
+            extreme_price = high
+
+    return results

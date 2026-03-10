@@ -1,0 +1,13 @@
+# Keep Cloud Build uploads small and avoid leaking local secrets.
+.gcloudignore
+.git
+.gitignore
+__pycache__/
+.venv/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+.env
+credentials.txt
+*.csv

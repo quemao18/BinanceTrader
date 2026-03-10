@@ -18,9 +18,7 @@ from datetime import datetime
 from Indicators import Indicators
 from joblib import load
 from tensorflow.keras.models import load_model
-from stock_indicators.indicators.common.enums import EndType
-from stock_indicators.indicators.common.quote import Quote
-from Labels import get_zig_zag
+from Labels import EndType, get_zig_zag
 import Downloads as dls # Optional, Import this package just to avoid rewriting the API_key, Secret, timeframe and trading_pair
 
 class BinanceTrader:
@@ -47,21 +45,25 @@ class BinanceTrader:
         The leverage to trade with (default is 2).
     """
     
-    def __init__(self, symbol, api_key, secret_key, testnet, model_path, scaler_path, bar_length = "15m", limit = 1000, leverage = 2):
+    def __init__(self, symbol, api_key, secret_key, testnet, model_path, scaler_path, bar_length = "15m", limit = 1000, leverage = 2, trade_mode = "futures", skip_fetch_currencies = True):
         self.symbol = symbol
         self._api_key = api_key
         self._secret = secret_key
         self._testnet = testnet
+        self._trade_mode = trade_mode.lower()
+        self._skip_fetch_currencies = skip_fetch_currencies
         self._model = load_model(model_path)
         self._scaler = load(scaler_path)
         self.bar_length = bar_length
         self._limit = limit
         self.leverage = leverage
         self.position = 0
+        self.units = 0
         self.data = None
         self.n = 0
         self.pnl = None
         self._notional = 1
+        self._last_processed_candle = None
         self.make_connection()
         self.fetch_balances()
         self.get_data()
@@ -71,26 +73,78 @@ class BinanceTrader:
         return f"{time} | BinanceTrader Class that uses DNN for predictions!"
     
     def current_time(self): # Fetching current time for print out (timezone = Iran)
-        tz_Iran = pytz.timezone("Iran")
+        tz_Iran = pytz.timezone("America/New_York") # Change the timezone if you want to have print out in your local time.
         current_time = datetime.now(tz_Iran)
         dis_time = current_time.strftime("%Y-%m-%d | %H:%M:%S")
         return dis_time
     
     def make_connection(self): # Make a connection to Binance.com
-        binance = ccxt.binance({'enableRateLimit': True, 'options': {'defaultType': 'future'}, 'timeout': 30000})
+        cfg = {'enableRateLimit': True, 'timeout': 30000}
+        if self._trade_mode == "futures":
+            cfg['options'] = {'defaultType': 'future'}
+        binance = ccxt.binance(cfg)
         binance.set_sandbox_mode(self._testnet) # For test mode, enable this option
         binance.apiKey = self._api_key
         binance.secret = self._secret
-        binance.load_markets()
-        binance.set_leverage(self.leverage, symbol = self.symbol)
+        if self._skip_fetch_currencies:
+            # Avoid private SAPI currency metadata call, which may fail with HTTP 451 in some cloud regions.
+            binance.options['fetchCurrencies'] = False
+        try:
+            binance.load_markets()
+        except Exception as exc:
+            message = str(exc)
+            if ' 451 ' in message or '451  {' in message:
+                raise RuntimeError(
+                    "Binance rejected this cloud region/IP (HTTP 451) while loading markets. "
+                    "Keep SKIP_FETCH_CURRENCIES=true and, if the error persists, deploy the job in another region."
+                ) from exc
+            raise
+        if self._trade_mode == "spot":
+            self.binance = binance
+            return
+        try:
+            binance.set_leverage(self.leverage, symbol = self.symbol)
+        except Exception as exc:
+            message = str(exc)
+            if ('"code":-4109' in message) or ("account is inactive" in message.lower()):
+                mode = "testnet" if self._testnet else "mainnet"
+                raise RuntimeError(
+                    f"Binance Futures account is inactive on {mode}. Activate Futures for this API key, "
+                    "or switch to testnet credentials and set testnet=True."
+                ) from exc
+            if ('"code":-2015' in message) or ("invalid api-key" in message.lower()):
+                mode = "testnet" if self._testnet else "mainnet"
+                raise RuntimeError(
+                    f"Invalid API key/permissions for Binance Futures on {mode}. "
+                    "If testnet=True, use Binance Futures TESTNET keys. "
+                    "If using mainnet keys, set testnet=False and enable Futures + trading permissions."
+                ) from exc
+            raise
         self.binance = binance
         
     def fetch_balances(self): # Account Balance
         ex = self.binance
+        if self._trade_mode == "spot":
+            quote = self.symbol.split("/")[1]
+            bal = float(ex.fetch_balance()["free"].get(quote, 0) or 0)
+            price = ex.fetch_ticker(symbol = self.symbol)["last"]
+            am = (bal * 0.99) / price if price else 0
+            am = float(ex.amount_to_precision(self.symbol, am)) if am > 0 else 0
+            self._amount = am
+            self._sync_spot_position()
+            return
+
         bal = ex.fetch_balance()["total"]["USDT"]
         price = ex.fetch_ticker(symbol = self.symbol)["last"]
         am = round(round(bal / price, 2) - round(1 / price, 2), 0)
         self._amount = am
+
+    def _sync_spot_position(self):
+        ex = self.binance
+        base = self.symbol.split("/")[0]
+        base_amount = float(ex.fetch_balance()["free"].get(base, 0) or 0)
+        self.units = float(ex.amount_to_precision(self.symbol, base_amount)) if base_amount > 0 else 0
+        self.position = 1 if self.units > 0 else 0
         
     def get_data(self): # fetching the data from Binance using API
         ex = self.binance
@@ -121,10 +175,7 @@ class BinanceTrader:
         
     def zigzag(self, source = EndType.HIGH_LOW, pct = 5): # Creating Labels
         df = self.data[["Open", "High", "Low", "Close"]].copy()
-        # Assuming you have a pandas DataFrame named `df` with columns 'Open', 'High', 'Low', and 'Close'
-        quotes = [Quote(date=row.Index, open=row.Open, high=row.High, low=row.Low, close=row.Close) for row in df.itertuples()]
-        # Calculate the Zig Zag indicator
-        zig_zag_results = get_zig_zag(quotes, end_type = source, percent_change = pct)
+        zig_zag_results = get_zig_zag(df.itertuples(), end_type = source, percent_change = pct)
         # Access the Zig Zag results
         trend = []
         for result in zig_zag_results:
@@ -153,6 +204,26 @@ class BinanceTrader:
         
     def strategy(self): # Opening LONG/SHORT positions based on predictions
         ex = self.binance
+        if self._trade_mode == "spot":
+            if self._label == 1:
+                self._sync_spot_position()
+                if self.position == 0:
+                    if self._amount > 0:
+                        order = ex.create_market_order(self.symbol, side = "buy", amount = self._amount)
+                        sleep(1)
+                        self._sync_spot_position()
+                        self.print_status("buy", order)
+                    else:
+                        print("Couldn't Trade! Spot quote balance is too low to BUY")
+            elif self._label == -1:
+                self._sync_spot_position()
+                if self.position == 1 and self.units > 0:
+                    order = ex.create_market_order(self.symbol, side = "sell", amount = self.units)
+                    sleep(1)
+                    self._sync_spot_position()
+                    self.print_status("sell", order)
+            return
+
         if self._label == 1:
             if self.position == -1:
                 order = ex.create_market_order(self.symbol, side = "buy", amount = self.units)
@@ -212,6 +283,8 @@ class BinanceTrader:
                     self.position = -1
         
     def tp_position(self):
+        if self._trade_mode == "spot":
+            return
         ex = self.binance
         if self.position in [-1, 1]:
             un_pnl = ex.fetch_positions(symbols = [self.symbol])[0]["unrealizedPnl"]
@@ -273,6 +346,19 @@ class BinanceTrader:
     def print_status(self, status, order):
         ex = self.binance
         time = self.current_time()
+
+        if self._trade_mode == "spot":
+            amount = order.get("filled") or order.get("amount") or 0
+            amount = round(float(amount), 6)
+            if "buy" in status:
+                print("-" * 100)
+                print(f"{time} ---> Buying {self.symbol} for : {amount}")
+                print("-" * 100)
+            elif "sell" in status:
+                print("-" * 100)
+                print(f"{time} ---> Selling {self.symbol} for : {amount}")
+                print("-" * 100)
+            return
         
         if "buy" in status:
             self.order_size_1 = round(float(ex.fetch_positions(symbols = [self.symbol])[0]["info"]["positionAmt"]), 2)
@@ -330,10 +416,35 @@ class BinanceTrader:
         print("-" * 100)
         
     def all_func(self):
+        self.run_single_cycle(only_new_candle = False)
+
+    def _latest_closed_candle(self):
+        if self.data is None or len(self.data.index) == 0:
+            return None
+        if len(self.data.index) >= 2:
+            return self.data.index[-2]
+        return self.data.index[-1]
+
+    def run_single_cycle(self, only_new_candle = True):
+        self.fetch_balances()
         self.get_data()
+
+        latest_closed = self._latest_closed_candle()
+        if only_new_candle and latest_closed is not None and latest_closed == self._last_processed_candle:
+            print(f"{self.current_time()} | No new closed candle. Skipping cycle.")
+            return False
+
+        previous_position = self.position
         self.prepare_data()
         self.prepare_model()
         self.strategy()
+        self._last_processed_candle = latest_closed
+
+        print(
+            f"{self.current_time()} | Cycle done | label={self._label} | "
+            f"position={previous_position}->{self.position}"
+        )
+        return True
         
     def refreshing_data(self):
         while True:
@@ -358,7 +469,13 @@ class BinanceTrader:
 symbol = dls.trading_pair.replace("USDT", "/USDT") # The currency pair you want to trade ---------> "BaseCurrency/QuoteCurrency"
 api_key = dls.api_key # The API key you got from Binance
 secret = dls.secret # The Secret key you got from Binance
-testnet = False # Set it to True if you are working with binance testnet
+testnet = dls.testnet # Keep runtime mode aligned with Downloads.py
+trade_mode = getattr(dls, "trade_mode", "futures") # "spot" or "futures"
+skip_fetch_currencies = getattr(dls, "skip_fetch_currencies", True)
+single_run = getattr(dls, "single_run", False)
+max_cycles_per_run = getattr(dls, "max_cycles_per_run", 1)
+sleep_between_cycles_sec = getattr(dls, "sleep_between_cycles_sec", 30)
+only_new_candle = getattr(dls, "only_new_candle", True)
 model_path = "model.keras" # The path of saved model in your local computer or server
 scaler_path = "scaler.joblib" # The path of saved scaler in your local computer or server
 bar_length = dls.timeframe # timeframe
@@ -366,8 +483,17 @@ limit = 500 # Number of candles you need (based on how many NaN values you have)
 leverage = 2 # Desired leverage
 
 
-trader = BinanceTrader(symbol, api_key, secret, testnet, model_path, scaler_path, bar_length, limit, leverage)
+trader = BinanceTrader(symbol, api_key, secret, testnet, model_path, scaler_path, bar_length, limit, leverage, trade_mode, skip_fetch_currencies)
 print(trader)
-thread = Thread(target = trader.refreshing_data)
-thread.start()
+if single_run:
+    # Cloud scheduler mode: execute a bounded amount of cycles and exit.
+    for cycle in range(max_cycles_per_run):
+        print(f"{trader.current_time()} | Starting cycle {cycle + 1}/{max_cycles_per_run}")
+        trader.run_single_cycle(only_new_candle = only_new_candle)
+        if cycle < (max_cycles_per_run - 1):
+            sleep(sleep_between_cycles_sec)
+    print(f"{trader.current_time()} | Single run completed")
+else:
+    thread = Thread(target = trader.refreshing_data)
+    thread.start()
 

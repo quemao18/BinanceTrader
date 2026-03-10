@@ -7,4 +7,3 @@ python-binance
 ccxt
 schedule
 pytz
-stock-indicators
