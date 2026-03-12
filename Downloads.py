@@ -10,6 +10,7 @@
 from binance.client import Client
 import pandas as pd
 import os
+import json
 from pathlib import Path
 
 
@@ -43,6 +44,30 @@ def _to_int(value: str, default: int) -> int:
         return default
 
 
+def _to_float(value: str, default: float) -> float:
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
+def _load_best_thresholds(path: str) -> tuple[float, float] | None:
+    file_path = Path(path)
+    if not file_path.exists():
+        return None
+    try:
+        payload = json.loads(file_path.read_text())
+        buy = float(payload.get("BUY_THRESHOLD"))
+        sell = float(payload.get("SELL_THRESHOLD"))
+    except (ValueError, TypeError):
+        return None
+    if buy <= sell:
+        return None
+    return buy, sell
+
+
 _load_env_file()
 
 api_key = os.getenv("API_KEY")
@@ -62,6 +87,19 @@ single_run = _to_bool(os.getenv("SINGLE_RUN", "false"), default = False)
 max_cycles_per_run = max(1, _to_int(os.getenv("MAX_CYCLES_PER_RUN", "1"), default = 1))
 sleep_between_cycles_sec = max(1, _to_int(os.getenv("SLEEP_BETWEEN_CYCLES_SEC", "30"), default = 30))
 only_new_candle = _to_bool(os.getenv("ONLY_NEW_CANDLE", "true"), default = True)
+max_position_pct = min(max(_to_float(os.getenv("MAX_POSITION_PCT", "0.99"), default = 0.99), 0.0), 1.0)
+buy_threshold = _to_float(os.getenv("BUY_THRESHOLD", "0.60"), default = 0.60)
+sell_threshold = _to_float(os.getenv("SELL_THRESHOLD", "0.40"), default = 0.40)
+auto_load_best_thresholds = _to_bool(os.getenv("AUTO_LOAD_BEST_THRESHOLDS", "false"), default = False)
+best_thresholds_path = os.getenv("BEST_THRESHOLDS_PATH", "best_thresholds.json")
+if auto_load_best_thresholds:
+    loaded_thresholds = _load_best_thresholds(best_thresholds_path)
+    if loaded_thresholds is not None:
+        buy_threshold, sell_threshold = loaded_thresholds
+state_file = os.getenv("STATE_FILE", "bot_state.json")
+kill_switch_file = os.getenv("KILL_SWITCH_FILE", ".pause_trading")
+require_go_no_go = _to_bool(os.getenv("REQUIRE_GO_NO_GO", "false"), default = False)
+training_metrics_path = os.getenv("TRAINING_METRICS_PATH", "training_metrics.json")
 # Replace "BTCUSDT" and "15m" with any currency pair and timeframe you want.
 
 if __name__ == "__main__":
@@ -76,9 +114,9 @@ if __name__ == "__main__":
                                             start_str = start, end_str = None, limit = 1000)
     df = pd.DataFrame(bars)
     df["Date"] = pd.to_datetime(df.iloc[:,0], unit = "ms")
-    df.columns = ["Open Time", "Open", "High", "Low", "Close", "Volume",
+    df.columns = ("Open Time", "Open", "High", "Low", "Close", "Volume",
                     "Clos Time", "Quote Asset Volume", "Number of Trades",
-                    "Taker Buy Base Asset Volume", "Taker Buy Quote Asset Volume", "Ignore", "Date"]
+                    "Taker Buy Base Asset Volume", "Taker Buy Quote Asset Volume", "Ignore", "Date")
     df = df[["Date", "Open", "High", "Low", "Close"]].copy()
     df.set_index("Date", inplace = True)
     for column in df.columns:

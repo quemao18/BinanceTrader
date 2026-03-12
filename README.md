@@ -33,45 +33,60 @@ BinanceTrader is a Python class that utilizes Deep Neural Networks (DNN) for mak
 ## Installation
 
 1. Clone this repository:
-```
+
+```bash
 git clone https://github.com/AlrzA2003/BinanceTrader.git
 cd BinanceTrader
 ```
 
 2. Install the required packages:
-```
+
+```bash
 pip install -r requirements.txt
 ```
 
 For specific versions to ensure compatibility:
-```
+
+```bash
 pip install -r requirements_specific.txt
 ```
 
 ## Setup
 
 1. Data Preparation:
+
 - Run `Downloades.py` to fetch historical data from Binance.
 - Execute `Preprocessing.py` to train and save the model and scaler.
 
 Note: While pre-trained models are provided, it's recommended to train your own for the most up-to-date data.
 
 2. Configuration:
+
 - Copy `.env.example` to `.env` and set your Binance credentials and runtime options.
+
 - Recommended defaults for Cloud Run Jobs:
-   - `TRADE_MODE=spot`
-   - `TESTNET=false`
-   - `SINGLE_RUN=true`
-   - `MAX_CYCLES_PER_RUN=1`
-   - `ONLY_NEW_CANDLE=true`
+
+- `TRADE_MODE=spot`
+- `TESTNET=false`
+- `SINGLE_RUN=true`
+- `MAX_CYCLES_PER_RUN=1`
+- `ONLY_NEW_CANDLE=true`
 - Keep `SKIP_FETCH_CURRENCIES=true` to avoid Binance SAPI currency metadata calls that may fail in some cloud regions.
+- Training pipeline notes:
+
+- `Preprocessing.py` now uses temporal splits (train/validation/test) to reduce data leakage.
+- Optional variable: `FORWARD_RETURN_THRESHOLD` (default `0.0`) to define the positive-return target for the next candle.
+- Training outputs: `model.keras`, `scaler.joblib`, `training_metrics.json`, and `best_thresholds.json`.
+- `training_metrics.json` now includes threshold calibration, cost-aware backtest, walk-forward windows, and GO/NO_GO status.
 
 ## Usage
 
 After completing the setup, run the BinanceTrader:
-```
+
+```bash
 python BinanceTrader.py
 ```
+
 The script will connect to your Binance account and start trading based on the DNN predictions.
 
 ## Deploy on Google Cloud
@@ -79,7 +94,7 @@ The script will connect to your Binance account and start trading based on the D
 This project is optimized for **Cloud Run Jobs** + **Cloud Scheduler**.
 Do not deploy it as a Cloud Run Service because this bot is not an HTTP server.
 
-### Prerequisites
+### Prerequisites for Cloud Deployment
 
 - Install and authenticate `gcloud` CLI.
 - A GCP project with billing enabled.
@@ -213,4 +228,3 @@ Contributions to improve BinanceTrader are welcome! Please feel free to submit p
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-

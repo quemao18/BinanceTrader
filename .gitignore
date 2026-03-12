@@ -2,3 +2,8 @@ __pycache__/
 *.csv
 .env
 credentials.txt
+*.bak
+*.log
+bot_state.json
+best_thresholds.json
+training_metrics.json
