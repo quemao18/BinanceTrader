@@ -13,8 +13,8 @@ jobs:
 
     env:
       # --- Secrets (set these in: Settings > Secrets and variables > Actions) ---
-      API_KEY:  ${{ secrets.BINANCE_API_KEY }}
-      SECRET:   ${{ secrets.BINANCE_SECRET }}
+      API_KEY: ${{ secrets.API_KEY }}
+      SECRET:  ${{ secrets.SECRET }}
 
       # --- Non-secret runtime config ---
       TRADING_PAIR:              ${{ vars.TRADING_PAIR              || 'BTCUSDT' }}
